@@ -19,6 +19,7 @@
 ### `>` What we do
 
 ```diff
++ Software Development    Backends, APIs, frontends — Go, TypeScript, React, Svelte
 + Platform Engineering    Kubernetes, CI/CD, developer platforms that actually work
 + Cloud Migration         Get off legacy. Containerize. Ship to production.
 + AI Integration          LLMs, automation, AI-powered workflows for real problems
