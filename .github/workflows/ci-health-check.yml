@@ -2,9 +2,10 @@ name: CI Health Check
 
 # Portable, always-running merge gate. Because it has no path filter it runs on
 # EVERY pull request, unlike the repos' own path-filtered CI. It waits for all
-# other check runs on the PR head commit and fails if any of them failed, so a
-# single required context ("CI Health Check") transitively reflects whatever CI
-# each repo actually ran. A PR that triggers no other CI (e.g. docs-only) passes.
+# other check runs AND legacy commit statuses on the PR head commit and fails if
+# any of them failed, so a single required context ("CI Health Check")
+# transitively reflects whatever CI each repo actually ran. A PR that triggers no
+# other CI (e.g. docs-only) passes.
 #
 # Intended to be required org-wide via a repository ruleset "workflows" rule.
 
@@ -27,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Wait for sibling checks and verify none failed
+      - name: Wait for sibling checks/statuses and verify none failed
         uses: actions/github-script@v7
         with:
           script: |
@@ -38,44 +39,58 @@ jobs:
             }
             const sha = pr.head.sha;
             const SELF = 'ci health check'; // matched case-insensitively as a substring
-            const SETTLE_MS = 20000;        // let sibling check runs register
+            const SETTLE_MS = 20000;        // let sibling checks/statuses register
             const POLL_MS = 15000;
             const DEADLINE = Date.now() + 25 * 60 * 1000;
-            // Conclusions that should block a merge.
-            const BAD = new Set(['failure', 'cancelled', 'timed_out', 'action_required', 'startup_failure', 'stale']);
+            // Conclusions/states that should block a merge.
+            const BAD = new Set(['failure', 'cancelled', 'timed_out', 'action_required', 'startup_failure', 'stale', 'error']);
 
             const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-            const siblings = async () => {
-              // filter=latest (default) returns only the most recent run per check name,
-              // so re-run-to-green checks are handled correctly.
-              const runs = await github.paginate(github.rest.checks.listForRef, {
+
+            // Collect both modern check runs and legacy commit statuses, normalized
+            // to { name, status, conclusion }. filter=latest (default) on check runs
+            // returns only the most recent run per name, so a re-run-to-green check
+            // is treated as passing.
+            const gather = async () => {
+              const checkRuns = await github.paginate(github.rest.checks.listForRef, {
                 owner: context.repo.owner, repo: context.repo.repo, ref: sha, per_page: 100,
               });
-              return runs.filter((r) => !r.name.toLowerCase().includes(SELF));
+              const items = checkRuns.map((r) => ({ name: r.name, status: r.status, conclusion: r.conclusion }));
+
+              const combined = await github.rest.repos.getCombinedStatusForRef({
+                owner: context.repo.owner, repo: context.repo.repo, ref: sha, per_page: 100,
+              });
+              for (const s of combined.data.statuses) {
+                items.push({
+                  name: s.context,
+                  status: s.state === 'pending' ? 'in_progress' : 'completed',
+                  conclusion: s.state === 'success' ? 'success' : (s.state === 'pending' ? null : 'failure'),
+                });
+              }
+
+              return items.filter((i) => !i.name.toLowerCase().includes(SELF));
             };
 
             await sleep(SETTLE_MS);
 
             let emptyConfirmations = 0;
             while (true) {
-              const others = await siblings();
-              const pending = others.filter((r) => r.status !== 'completed');
+              const items = await gather();
+              const pending = items.filter((i) => i.status !== 'completed');
 
-              if (others.length === 0) {
-                // No sibling CI (e.g. path-filtered docs-only PR). Confirm twice
-                // to avoid passing before slow-to-register checks appear.
+              if (items.length === 0) {
+                // No sibling CI (e.g. path-filtered docs-only PR). Confirm twice to
+                // avoid passing before slow-to-register checks appear.
                 if (++emptyConfirmations >= 2) {
-                  core.info('No other CI checks ran on this PR; nothing to fail. Passing.');
+                  core.info('No other CI checks or statuses ran on this PR; nothing to fail. Passing.');
                   return;
                 }
               } else if (pending.length === 0) {
-                const failed = others.filter((r) => BAD.has(r.conclusion));
+                const failed = items.filter((i) => BAD.has(i.conclusion));
                 if (failed.length) {
-                  core.setFailed(
-                    'Failing checks: ' + failed.map((f) => `${f.name} (${f.conclusion})`).join(', '),
-                  );
+                  core.setFailed('Failing checks: ' + failed.map((f) => `${f.name} (${f.conclusion})`).join(', '));
                 } else {
-                  core.info(`All ${others.length} check(s) passed (or were skipped/neutral).`);
+                  core.info(`All ${items.length} check(s)/status(es) passed (or were skipped/neutral).`);
                 }
                 return;
               } else {
