@@ -1,0 +1,91 @@
+name: CI Health Check
+
+# Portable, always-running merge gate. Because it has no path filter it runs on
+# EVERY pull request, unlike the repos' own path-filtered CI. It waits for all
+# other check runs on the PR head commit and fails if any of them failed, so a
+# single required context ("CI Health Check") transitively reflects whatever CI
+# each repo actually ran. A PR that triggers no other CI (e.g. docs-only) passes.
+#
+# Intended to be required org-wide via a repository ruleset "workflows" rule.
+
+on:
+  pull_request:
+
+permissions:
+  checks: read
+  statuses: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ci-health-check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  health:
+    name: CI Health Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Wait for sibling checks and verify none failed
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            if (!pr) {
+              core.info('Not a pull_request event; nothing to gate.');
+              return;
+            }
+            const sha = pr.head.sha;
+            const SELF = 'ci health check'; // matched case-insensitively as a substring
+            const SETTLE_MS = 20000;        // let sibling check runs register
+            const POLL_MS = 15000;
+            const DEADLINE = Date.now() + 25 * 60 * 1000;
+            // Conclusions that should block a merge.
+            const BAD = new Set(['failure', 'cancelled', 'timed_out', 'action_required', 'startup_failure', 'stale']);
+
+            const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+            const siblings = async () => {
+              // filter=latest (default) returns only the most recent run per check name,
+              // so re-run-to-green checks are handled correctly.
+              const runs = await github.paginate(github.rest.checks.listForRef, {
+                owner: context.repo.owner, repo: context.repo.repo, ref: sha, per_page: 100,
+              });
+              return runs.filter((r) => !r.name.toLowerCase().includes(SELF));
+            };
+
+            await sleep(SETTLE_MS);
+
+            let emptyConfirmations = 0;
+            while (true) {
+              const others = await siblings();
+              const pending = others.filter((r) => r.status !== 'completed');
+
+              if (others.length === 0) {
+                // No sibling CI (e.g. path-filtered docs-only PR). Confirm twice
+                // to avoid passing before slow-to-register checks appear.
+                if (++emptyConfirmations >= 2) {
+                  core.info('No other CI checks ran on this PR; nothing to fail. Passing.');
+                  return;
+                }
+              } else if (pending.length === 0) {
+                const failed = others.filter((r) => BAD.has(r.conclusion));
+                if (failed.length) {
+                  core.setFailed(
+                    'Failing checks: ' + failed.map((f) => `${f.name} (${f.conclusion})`).join(', '),
+                  );
+                } else {
+                  core.info(`All ${others.length} check(s) passed (or were skipped/neutral).`);
+                }
+                return;
+              } else {
+                emptyConfirmations = 0;
+                core.info(`Waiting on ${pending.length} check(s): ${pending.map((p) => p.name).join(', ')}`);
+              }
+
+              if (Date.now() > DEADLINE) {
+                core.setFailed('Timed out waiting for checks to complete: ' + pending.map((p) => p.name).join(', '));
+                return;
+              }
+              await sleep(POLL_MS);
+            }
