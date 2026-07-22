@@ -39,6 +39,10 @@ jobs:
             }
             const sha = pr.head.sha;
             const SELF = 'ci health check'; // matched case-insensitively as a substring
+            // Advisory contexts that must never gate a merge: this gate itself, plus
+            // AI code reviewers, which post their own check runs. Matched
+            // case-insensitively as substrings and dropped from the wait/verify set.
+            const IGNORE = [SELF, 'coderabbit', 'copilot'];
             const SETTLE_MS = 20000;        // let sibling checks/statuses register
             const POLL_MS = 15000;
             const DEADLINE = Date.now() + 25 * 60 * 1000;
@@ -68,7 +72,7 @@ jobs:
                 });
               }
 
-              return items.filter((i) => !i.name.toLowerCase().includes(SELF));
+              return items.filter((i) => !IGNORE.some((n) => i.name.toLowerCase().includes(n)));
             };
 
             await sleep(SETTLE_MS);
