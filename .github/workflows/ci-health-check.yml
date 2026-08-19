@@ -93,8 +93,12 @@ jobs:
             // Check names come from whatever CI each repo runs, so they are not
             // trusted to be plain text: escaping keeps a name containing markdown
             // from reshaping the comment it is reported in.
-            const escape = (text) => String(text).replace(/([\\`*_{}\[\]()#+\-.!|>])/g, '\\$1');
-
+            const escape = (text) => String(text)
+              .replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;')
+              .replace(/@/g, '@\u200b')
+              .replace(/([\\`*_{}\[\]()#+\-.!|])/g, '\\$1');
             const listItem = (i) => {
               const label = `**${escape(i.name)}**${i.conclusion ? ` — ${escape(i.conclusion)}` : ''}`;
               return `- ${i.url ? `[${label}](${i.url})` : label}`;
