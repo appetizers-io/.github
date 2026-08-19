@@ -117,7 +117,7 @@ jobs:
                 }
               } catch (error) {
                 // Never let the messenger decide the verdict.
-                core.warning(`Could not write the gate's verdict to the PR: ${error.message}`);
+                core.warning(`Could not write the gate's verdict to the PR: ${error instanceof Error ? error.message : String(error)}`);
               }
             };
 
