@@ -99,8 +99,8 @@ jobs:
             // and one sticky comment. A passing run only edits a comment that
             // already exists — a gate that has nothing to report stays silent.
             const report = async (body, { comment }) => {
-              await core.summary.addRaw(body).write();
               try {
+                await core.summary.addRaw(body).write();
                 const comments = await github.paginate(github.rest.issues.listComments, {
                   owner: context.repo.owner, repo: context.repo.repo, issue_number: pr.number, per_page: 100,
                 });
