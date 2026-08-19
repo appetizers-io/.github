@@ -8,6 +8,14 @@ name: CI Health Check
 # other CI (e.g. docs-only) passes.
 #
 # Intended to be required org-wide via a repository ruleset "workflows" rule.
+#
+# Because the ruleset runs this file from THIS repository, the run it produces
+# does not belong to a workflow the gated repository knows about: `gh run view
+# <id>` there answers 404, and the check run Actions publishes carries no
+# output. Anything this job only writes to its log is therefore unreadable from
+# the PR it is blocking. That is why the verdict is also written to the job
+# summary and to one sticky PR comment — a gate that blocks a merge has to say
+# why somewhere the blocked PR can see.
 
 on:
   pull_request:
@@ -16,7 +24,10 @@ permissions:
   checks: read
   statuses: read
   contents: read
-  pull-requests: read
+  # Needed to post the sticky verdict comment. On a fork PR the token is
+  # read-only regardless; the comment is attempted and its failure downgraded to
+  # a warning, so it can never turn a passing gate red.
+  pull-requests: write
 
 concurrency:
   group: ci-health-check-${{ github.event.pull_request.number || github.ref }}
@@ -48,18 +59,21 @@ jobs:
             const DEADLINE = Date.now() + 25 * 60 * 1000;
             // Conclusions/states that should block a merge.
             const BAD = new Set(['failure', 'cancelled', 'timed_out', 'action_required', 'startup_failure', 'stale', 'error']);
+            // Identifies this job's own comment so repeated runs edit one comment
+            // instead of adding to a pile.
+            const MARKER = '<!-- ci-health-check-verdict -->';
 
             const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
             // Collect both modern check runs and legacy commit statuses, normalized
-            // to { name, status, conclusion }. filter=latest (default) on check runs
-            // returns only the most recent run per name, so a re-run-to-green check
-            // is treated as passing.
+            // to { name, status, conclusion, url }. filter=latest (default) on check
+            // runs returns only the most recent run per name, so a re-run-to-green
+            // check is treated as passing.
             const gather = async () => {
               const checkRuns = await github.paginate(github.rest.checks.listForRef, {
                 owner: context.repo.owner, repo: context.repo.repo, ref: sha, per_page: 100,
               });
-              const items = checkRuns.map((r) => ({ name: r.name, status: r.status, conclusion: r.conclusion }));
+              const items = checkRuns.map((r) => ({ name: r.name, status: r.status, conclusion: r.conclusion, url: r.html_url }));
 
               const combined = await github.rest.repos.getCombinedStatusForRef({
                 owner: context.repo.owner, repo: context.repo.repo, ref: sha, per_page: 100,
@@ -69,10 +83,62 @@ jobs:
                   name: s.context,
                   status: s.state === 'pending' ? 'in_progress' : 'completed',
                   conclusion: s.state === 'success' ? 'success' : (s.state === 'pending' ? null : 'failure'),
+                  url: s.target_url,
                 });
               }
 
               return items.filter((i) => !IGNORE.some((n) => i.name.toLowerCase().includes(n)));
+            };
+
+const listItem = (i) => {
+  const esc = (s) => String(s).replace(/([\\`*_{}\[\]()#+\-.!|>])/g, '\\$1'); const name = esc(i.name); const conc = i.conclusion ? esc(i.conclusion) : '';
+  const label = `**${name}**${conc ? ` — ${conc}` : ''}`;
+  return `- ${i.url ? `[${label}](${i.url})` : label}`;
+};
+
+            // Write the verdict where the blocked PR can read it: the job summary,
+            // and one sticky comment. A passing run only edits a comment that
+            // already exists — a gate that has nothing to report stays silent.
+            const report = async (body, { comment }) => {
+              try {
+                await core.summary.addRaw(body).write();
+                const comments = await github.paginate(github.rest.issues.listComments, {
+                  owner: context.repo.owner, repo: context.repo.repo, issue_number: pr.number, per_page: 100,
+                });
+                const mine = comments.find((c) => c.user?.login === 'github-actions[bot]' && (c.body || '').includes(MARKER));
+                const payload = `${MARKER}\n${body}`;
+                if (mine) {
+                  await github.rest.issues.updateComment({
+                    owner: context.repo.owner, repo: context.repo.repo, comment_id: mine.id, body: payload,
+                  });
+                } else if (comment) {
+                  await github.rest.issues.createComment({
+                    owner: context.repo.owner, repo: context.repo.repo, issue_number: pr.number, body: payload,
+                  });
+                }
+              } catch (error) {
+                // Never let the messenger decide the verdict.
+                core.warning(`Could not write the gate's verdict to the PR: ${error instanceof Error ? error.message : String(error)}`);
+              }
+            };
+
+            const fail = async (heading, offending, hint) => {
+              const body = [
+                `### ${heading}`,
+                '',
+                `Head commit \`${sha.slice(0, 7)}\`.`,
+                '',
+                ...offending.map(listItem),
+                '',
+                hint,
+              ].join('\n');
+              await report(body, { comment: true });
+              core.setFailed(`${heading}: ` + offending.map((i) => `${i.name}${i.conclusion ? ` (${i.conclusion})` : ''}`).join(', '));
+            };
+
+            const pass = async (message) => {
+              await report(`### CI Health Check passed\n\n${message}`, { comment: false });
+              core.info(message);
             };
 
             await sleep(SETTLE_MS);
@@ -86,15 +152,19 @@ jobs:
                 // No sibling CI (e.g. path-filtered docs-only PR). Confirm twice to
                 // avoid passing before slow-to-register checks appear.
                 if (++emptyConfirmations >= 2) {
-                  core.info('No other CI checks or statuses ran on this PR; nothing to fail. Passing.');
+                  await pass('No other CI checks or statuses ran on this PR; nothing to fail.');
                   return;
                 }
               } else if (pending.length === 0) {
                 const failed = items.filter((i) => BAD.has(i.conclusion));
                 if (failed.length) {
-                  core.setFailed('Failing checks: ' + failed.map((f) => `${f.name} (${f.conclusion})`).join(', '));
+                  await fail(
+                    'CI Health Check failed',
+                    failed,
+                    'This gate has no opinion of its own — it fails because the checks above did. Fix or re-run them and it goes green.',
+                  );
                 } else {
-                  core.info(`All ${items.length} check(s)/status(es) passed (or were skipped/neutral).`);
+                  await pass(`All ${items.length} check(s)/status(es) passed (or were skipped/neutral).`);
                 }
                 return;
               } else {
@@ -103,7 +173,11 @@ jobs:
               }
 
               if (Date.now() > DEADLINE) {
-                core.setFailed('Timed out waiting for checks to complete: ' + pending.map((p) => p.name).join(', '));
+                await fail(
+                  'CI Health Check timed out',
+                  pending,
+                  'These checks never reported a conclusion within 25 minutes. A wedged or never-started job blocks the merge exactly as a failing one does.',
+                );
                 return;
               }
               await sleep(POLL_MS);
