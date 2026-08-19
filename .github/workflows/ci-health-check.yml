@@ -90,10 +90,11 @@ jobs:
               return items.filter((i) => !IGNORE.some((n) => i.name.toLowerCase().includes(n)));
             };
 
-            const listItem = (i) => {
-              const label = `**${i.name}**${i.conclusion ? ` — ${i.conclusion}` : ''}`;
-              return `- ${i.url ? `[${label}](${i.url})` : label}`;
-            };
+const listItem = (i) => {
+  const esc = (s) => String(s).replace(/([\\`*_{}\[\]()#+\-.!|>])/g, '\\$1'); const name = esc(i.name); const conc = i.conclusion ? esc(i.conclusion) : '';
+  const label = `**${name}**${conc ? ` — ${conc}` : ''}`;
+  return `- ${i.url ? `[${label}](${i.url})` : label}`;
+};
 
             // Write the verdict where the blocked PR can read it: the job summary,
             // and one sticky comment. A passing run only edits a comment that
