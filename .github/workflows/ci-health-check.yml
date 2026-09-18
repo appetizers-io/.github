@@ -2,8 +2,8 @@ name: CI Health Check
 
 # Portable, always-running merge gate. Because it has no path filter it runs on
 # EVERY pull request, unlike the repos' own path-filtered CI. It waits for all
-# other check runs AND legacy commit statuses on the PR head commit and fails if
-# any of them failed, so a single required context ("CI Health Check")
+# other workflow runs, check runs AND legacy commit statuses on the PR head
+# commit and fails if any failed, so a single required context ("CI Health Check")
 # transitively reflects whatever CI each repo actually ran. A PR that triggers no
 # other CI (e.g. docs-only) passes.
 #
@@ -21,6 +21,7 @@ on:
   pull_request:
 
 permissions:
+  actions: read
   checks: read
   statuses: read
   contents: read
@@ -84,6 +85,30 @@ jobs:
                   status: s.state === 'pending' ? 'in_progress' : 'completed',
                   conclusion: s.state === 'success' ? 'success' : (s.state === 'pending' ? null : 'failure'),
                   url: s.target_url,
+                });
+              }
+
+              // Queued workflows may not have registered any job checks yet.
+              const runs = await github.paginate(github.rest.actions.listWorkflowRunsForRepo, {
+                owner: context.repo.owner, repo: context.repo.repo, head_sha: sha, per_page: 100,
+              });
+              const latest = new Map();
+              for (const run of runs) {
+                if (run.id === context.runId) continue;
+                const key = `${run.workflow_id}:${run.event}`;
+                const previous = latest.get(key);
+                // Run IDs increase for new runs; re-run attempts retain their ID.
+                if (!previous || run.id > previous.id ||
+                    (run.id === previous.id && run.run_attempt > previous.run_attempt)) {
+                  latest.set(key, run);
+                }
+              }
+              for (const run of latest.values()) {
+                items.push({
+                  name: run.name || run.path || `Workflow ${run.workflow_id}`,
+                  status: run.status,
+                  conclusion: run.conclusion,
+                  url: run.html_url,
                 });
               }
 
