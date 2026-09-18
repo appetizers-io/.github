@@ -37,7 +37,7 @@ concurrency:
 jobs:
   health:
     name: CI Health Check
-    runs-on: appetizers-arm64
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: Wait for sibling checks/statuses and verify none failed
