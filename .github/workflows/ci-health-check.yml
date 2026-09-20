@@ -37,7 +37,10 @@ jobs:
   health:
     name: CI Health Check
     runs-on: appetizers-arm64
-    timeout-minutes: 30
+    # 55, because the gate now QUEUES like everything else: it waits for a
+    # runner before it starts waiting for its siblings, so the old 30 could
+    # expire on capacity alone.
+    timeout-minutes: 55
     steps:
       - name: Wait for sibling checks/statuses and verify none failed
         uses: actions/github-script@v7
@@ -56,7 +59,12 @@ jobs:
             const IGNORE = [SELF, 'coderabbit', 'copilot'];
             const SETTLE_MS = 20000;        // let sibling checks/statuses register
             const POLL_MS = 15000;
-            const DEADLINE = Date.now() + 25 * 60 * 1000;
+            // 50 minutes, not 25: repos here run CI on self-hosted runners,
+            // where a job's elapsed time is mostly QUEUE. A fan-out PR has been
+            // seen reporting at 25m10s with the job itself taking 2m4s, so a
+            // 25-minute deadline failed the gate on capacity rather than on
+            // anything about the change.
+            const DEADLINE = Date.now() + 50 * 60 * 1000;
             // Conclusions/states that should block a merge.
             const BAD = new Set(['failure', 'cancelled', 'timed_out', 'action_required', 'startup_failure', 'stale', 'error']);
             // Identifies this job's own comment so repeated runs edit one comment
