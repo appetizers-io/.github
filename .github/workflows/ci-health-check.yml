@@ -39,8 +39,8 @@ jobs:
     # GitHub-hosted: the ARC scale sets ran on the integration cluster, which
     # is gone, and a gate that cannot get a runner blocks every merge.
     runs-on: ubuntu-latest
-    # Above the 50-minute wait for sibling checks below.
-    timeout-minutes: 55
+    # Just above the 10-minute wait for sibling checks below.
+    timeout-minutes: 12
     steps:
       - name: Wait for sibling checks/statuses and verify none failed
         uses: actions/github-script@v7
@@ -59,10 +59,11 @@ jobs:
             const IGNORE = [SELF, 'coderabbit', 'copilot'];
             const SETTLE_MS = 20000;        // let sibling checks/statuses register
             const POLL_MS = 15000;
-            // 50 minutes: the slowest sibling CI (Go tests with Docker) takes
-            // about 20 minutes plus queue time, and a deadline that expires on
-            // capacity fails the gate for nothing the change did.
-            const DEADLINE = Date.now() + 50 * 60 * 1000;
+            // 10 minutes. The gate bills runner minutes while it only waits, so
+            // it does not sit out slow sibling CI: if a check is still running
+            // when the deadline passes, the gate fails and is re-run once that
+            // check has finished.
+            const DEADLINE = Date.now() + 10 * 60 * 1000;
             // Conclusions/states that should block a merge.
             const BAD = new Set(['failure', 'cancelled', 'timed_out', 'action_required', 'startup_failure', 'stale', 'error']);
             // Identifies this job's own comment so repeated runs edit one comment
@@ -190,7 +191,7 @@ jobs:
                 await fail(
                   'CI Health Check timed out',
                   pending,
-                  'These checks never reported a conclusion within 50 minutes. A wedged or never-started job blocks the merge exactly as a failing one does.',
+                  'These checks had not finished within 10 minutes. Re-run this check once they have; a wedged or never-started job blocks the merge exactly as a failing one does.',
                 );
                 return;
               }
