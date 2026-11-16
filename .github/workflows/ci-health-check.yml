@@ -36,10 +36,10 @@ concurrency:
 jobs:
   health:
     name: CI Health Check
-    runs-on: appetizers-arm64
-    # 55, because the gate now QUEUES like everything else: it waits for a
-    # runner before it starts waiting for its siblings, so the old 30 could
-    # expire on capacity alone.
+    # GitHub-hosted: the ARC scale sets ran on the integration cluster, which
+    # is gone, and a gate that cannot get a runner blocks every merge.
+    runs-on: ubuntu-latest
+    # Above the 50-minute wait for sibling checks below.
     timeout-minutes: 55
     steps:
       - name: Wait for sibling checks/statuses and verify none failed
@@ -59,11 +59,9 @@ jobs:
             const IGNORE = [SELF, 'coderabbit', 'copilot'];
             const SETTLE_MS = 20000;        // let sibling checks/statuses register
             const POLL_MS = 15000;
-            // 50 minutes, not 25: repos here run CI on self-hosted runners,
-            // where a job's elapsed time is mostly QUEUE. A fan-out PR has been
-            // seen reporting at 25m10s with the job itself taking 2m4s, so a
-            // 25-minute deadline failed the gate on capacity rather than on
-            // anything about the change.
+            // 50 minutes: the slowest sibling CI (Go tests with Docker) takes
+            // about 20 minutes plus queue time, and a deadline that expires on
+            // capacity fails the gate for nothing the change did.
             const DEADLINE = Date.now() + 50 * 60 * 1000;
             // Conclusions/states that should block a merge.
             const BAD = new Set(['failure', 'cancelled', 'timed_out', 'action_required', 'startup_failure', 'stale', 'error']);
@@ -192,7 +190,7 @@ jobs:
                 await fail(
                   'CI Health Check timed out',
                   pending,
-                  'These checks never reported a conclusion within 25 minutes. A wedged or never-started job blocks the merge exactly as a failing one does.',
+                  'These checks never reported a conclusion within 50 minutes. A wedged or never-started job blocks the merge exactly as a failing one does.',
                 );
                 return;
               }
