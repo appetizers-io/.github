@@ -19,6 +19,8 @@ name: CI Health Check
 
 on:
   pull_request:
+    # ready_for_review: a draft is checked once it is marked ready.
+    types: [ opened, synchronize, reopened, ready_for_review ]
 
 permissions:
   checks: read
@@ -36,6 +38,9 @@ concurrency:
 jobs:
   health:
     name: CI Health Check
+    # Draft pull requests run nothing: the gate would only bill minutes
+    # waiting for CI that skips drafts too, and a draft cannot be merged.
+    if: ${{ !github.event.pull_request.draft }}
     # GitHub-hosted: the ARC scale sets ran on the integration cluster, which
     # is gone, and a gate that cannot get a runner blocks every merge.
     runs-on: ubuntu-latest
